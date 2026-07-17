@@ -1,11 +1,15 @@
 // index.js — worker HTTP. Reçoit un jobId, traite la vidéo, dépose le résultat,
 // met à jour la ligne `jobs` en base. Sécurisé par un secret partagé (WORKER_SECRET).
+// Traitement séquentiel (1 job à la fois) + libération des jobs bloqués : conçu pour
+// tenir sur une petite instance (512 Mo) sans dépasser la limite mémoire.
 const express = require("express");
 const path = require("path");
 const os = require("os");
 const fs = require("fs");
 const crypto = require("crypto");
 const { Pool } = require("pg");
+const { Readable } = require("stream");
+const { pipeline } = require("stream/promises");
 
 const { downloadTikTok } = require("./lib/tiktok");
 const { burnCaption } = require("./lib/caption");
@@ -18,9 +22,13 @@ app.use(express.json({ limit: "1mb" }));
 const pool = new Pool({
   connectionString: process.env.DATABASE_URL,
   ssl: process.env.PGSSL === "disable" ? false : { rejectUnauthorized: false },
+  max: 3,
 });
 
 const WORKER_SECRET = process.env.WORKER_SECRET || "";
+// Au-delà de ce délai, un job encore "processing" est considéré comme bloqué
+// (worker redémarré / OOM) et repassé en erreur pour ne pas laisser l'UI tourner.
+const STALE_MS = 3 * 60 * 1000;
 
 function tmp(name) {
   return path.join(os.tmpdir(), Date.now() + "_" + Math.random().toString(36).slice(2) + name);
@@ -45,31 +53,45 @@ async function getJob(id) {
   return rows[0];
 }
 
-// Télécharge un objet du stockage vers un fichier local (via URL signée).
+// Télécharge un objet du stockage vers un fichier local (streaming, faible mémoire).
 async function pullInput(key, dest) {
   const url = await signedGetUrl(key, 600);
   const res = await fetch(url);
   if (!res.ok) throw new Error("Lecture input échouée: " + res.status);
-  const buf = Buffer.from(await res.arrayBuffer());
-  fs.writeFileSync(dest, buf);
+  await pipeline(Readable.fromWeb(res.body), fs.createWriteStream(dest));
   return dest;
 }
 
-app.get("/health", (_req, res) => res.json({ ok: true }));
+// ---- File d'attente séquentielle : un seul traitement lourd à la fois ----
+let processing = false;
+const queue = [];
 
-app.post("/process", async (req, res) => {
-  if (WORKER_SECRET && req.headers["x-worker-secret"] !== WORKER_SECRET) {
-    return res.status(401).json({ error: "unauthorized" });
+function enqueue(jobId) {
+  if (!queue.includes(jobId)) queue.push(jobId);
+  drain();
+}
+
+async function drain() {
+  if (processing) return;
+  const jobId = queue.shift();
+  if (!jobId) return;
+  processing = true;
+  try {
+    await handleJob(jobId);
+  } catch (e) {
+    console.error("drain error", e);
+  } finally {
+    processing = false;
+    setTimeout(drain, 250);
   }
-  const { jobId } = req.body || {};
-  if (!jobId) return res.status(400).json({ error: "jobId requis" });
-  // On répond tout de suite : le traitement se fait en arrière-plan.
-  res.json({ accepted: true });
+}
 
+async function handleJob(jobId) {
   let inFile, outFile;
   try {
     const job = await getJob(jobId);
     if (!job) throw new Error("job introuvable");
+    if (job.status === "done") return;
     await setJob(jobId, { status: "processing" });
 
     const params = job.params || {};
@@ -78,9 +100,8 @@ app.post("/process", async (req, res) => {
     if (job.type === "tiktok") {
       const { file } = await downloadTikTok(params.url, os.tmpdir());
       inFile = file;
-      fs.copyFileSync(inFile, outFile); // HD tel quel
+      fs.copyFileSync(inFile, outFile);
     } else {
-      // caption / uniquify : l'input a été uploadé par le client dans le stockage
       inFile = tmp("_in.mp4");
       await pullInput(job.input_key, inFile);
 
@@ -113,7 +134,38 @@ app.post("/process", async (req, res) => {
       try { if (f && fs.existsSync(f)) fs.unlinkSync(f); } catch {}
     }
   }
+}
+
+async function sweepStale() {
+  try {
+    await pool.query(
+      `UPDATE jobs SET status='error',
+         error='Traitement interrompu (mémoire limitée). Relance le job.',
+         updated_at=now()
+       WHERE status='processing'
+         AND updated_at < now() - ($1::int * interval '1 millisecond')`,
+      [STALE_MS]
+    );
+  } catch (e) {
+    console.error("sweep error", e.message);
+  }
+}
+setInterval(sweepStale, 60 * 1000);
+
+app.get("/health", (_req, res) => res.json({ ok: true, busy: processing, queued: queue.length }));
+
+app.post("/process", async (req, res) => {
+  if (WORKER_SECRET && req.headers["x-worker-secret"] !== WORKER_SECRET) {
+    return res.status(401).json({ error: "unauthorized" });
+  }
+  const { jobId } = req.body || {};
+  if (!jobId) return res.status(400).json({ error: "jobId requis" });
+  res.json({ accepted: true, queued: queue.length + (processing ? 1 : 0) });
+  enqueue(jobId);
 });
 
 const port = process.env.PORT || 8080;
-app.listen(port, () => console.log("worker en écoute sur :" + port));
+app.listen(port, () => {
+  console.log("worker en écoute sur :" + port);
+  sweepStale();
+});
