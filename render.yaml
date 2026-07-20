@@ -1,0 +1,52 @@
+# ============================================================
+# ClipForge — Blueprint Render (config unique du worker)
+# ------------------------------------------------------------
+# À QUOI ÇA SERT :
+# Ce fichier définit le service worker ET toutes ses variables.
+# Pour (re)déployer dans N'IMPORTE QUEL workspace Render :
+#   Dashboard Render → New → Blueprint → choisir le repo clipforge
+#   → Render lit ce fichier et crée tout automatiquement.
+# Tu ne configures plus jamais le service à la main.
+#
+# Les variables marquées "sync: false" sont les SECRÈTES : Render
+# te les demande UNE fois au premier déploiement (collage en bloc,
+# pas champ par champ), puis les garde pour toujours — même si tu
+# supprimes/recrées le service, tu les re-colles en un seul bloc.
+# Les autres valeurs sont déjà remplies ici, rien à toucher.
+# ============================================================
+
+services:
+  - type: web
+    name: clipforge-worker
+    runtime: docker
+    repo: https://github.com/joanitawalker374-cloud/clipforge
+    branch: main
+    rootDir: worker
+    dockerfilePath: ./Dockerfile
+    plan: free
+    region: virginia
+    healthCheckPath: /health
+    autoDeploy: true
+    envVars:
+      # ---- Valeurs NON secrètes : déjà bonnes, ne touche pas ----
+      - key: S3_ENDPOINT
+        value: https://mrocffviukrykjlcwzak.supabase.co/storage/v1/s3
+      - key: S3_BUCKET
+        value: clipforge
+      - key: GROQ_WHISPER_MODEL
+        value: whisper-large-v3-turbo
+      # (PORT est injecté par Render, PGSSL inutile : SSL actif par défaut)
+
+      # ---- Secrètes : Render les demande UNE fois (collage en bloc) ----
+      - key: DATABASE_URL          # Supabase → Project Settings → Database → Connection string (URI)
+        sync: false
+      - key: S3_REGION             # Supabase → Project Settings → Storage (ex : eu-west-3)
+        sync: false
+      - key: S3_ACCESS_KEY_ID      # Supabase → Project Settings → Storage → S3 access keys
+        sync: false
+      - key: S3_SECRET_ACCESS_KEY  # idem (généré avec la clé ci-dessus)
+        sync: false
+      - key: GROQ_API_KEY          # console.groq.com → API Keys (régénère-la, elle a fuité dans le chat)
+        sync: false
+      - key: WORKER_SECRET         # même valeur que sur Vercel (côté site) — à recopier de l'ancien service
+        sync: false
