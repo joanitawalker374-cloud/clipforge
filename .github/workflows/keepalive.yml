@@ -1,0 +1,16 @@
+# Keep-alive : pinge le worker Render toutes les 10 minutes pour l'empêcher
+# de se mettre en veille (plan gratuit = veille après ~15 min d'inactivité).
+# Résultat : plus de démarrage à froid de ~50 s, le site répond H24.
+name: keepalive
+on:
+  schedule:
+    - cron: "*/10 * * * *"
+  workflow_dispatch: {}
+
+jobs:
+  ping:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Ping du worker
+        run: |
+          curl -fsS --max-time 40 "https://clipforge-6j6g.onrender.com/health" || true
