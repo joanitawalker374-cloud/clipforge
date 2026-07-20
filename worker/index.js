@@ -11,7 +11,7 @@ const { Pool } = require("pg");
 const { Readable } = require("stream");
 const { pipeline } = require("stream/promises");
 
-const { downloadTikTok } = require("./lib/tiktok");
+const { downloadTikTok, listProfile } = require("./lib/tiktok");
 const { burnCaption } = require("./lib/caption");
 const { uniquify } = require("./lib/uniquify");
 const { subtitle } = require("./lib/subtitles");
@@ -52,6 +52,18 @@ async function setJob(id, fields) {
 async function getJob(id) {
   const { rows } = await pool.query("SELECT * FROM jobs WHERE id=$1", [id]);
   return rows[0];
+}
+
+// Écrit le job + ses métadonnées (légende, auteur…). Si la colonne `meta`
+// n'existe pas encore (migration non appliquée), on réessaie sans, pour ne
+// jamais bloquer un job à cause des métadonnées.
+async function setJobMeta(id, fields, meta) {
+  try {
+    await setJob(id, meta ? { ...fields, meta: JSON.stringify(meta) } : fields);
+  } catch (e) {
+    if (/meta/i.test(String(e.message || ""))) await setJob(id, fields);
+    else throw e;
+  }
 }
 
 // Télécharge un objet du stockage vers un fichier local (streaming, faible mémoire).
@@ -97,12 +109,23 @@ async function handleJob(jobId) {
     await setJob(jobId, { status: "processing" });
 
     const params = job.params || {};
+
+    // profile : listing des vidéos d'un compte — résultat JSON, pas de vidéo.
+    if (job.type === "profile") {
+      const max = Math.min(parseInt(params.max, 10) || 24, 36);
+      const data = await listProfile(params.url, max);
+      await setJobMeta(jobId, { status: "done" }, data);
+      return;
+    }
+
     outFile = tmp("_out.mp4");
+    let meta = null;
 
     if (job.type === "tiktok" || job.type === "instagram") {
       // yt-dlp gère TikTok comme Instagram (Reels/posts publics) via l'URL.
-      const { file } = await downloadTikTok(params.url, os.tmpdir());
-      inFile = file;
+      const dl = await downloadTikTok(params.url, os.tmpdir());
+      inFile = dl.file;
+      meta = dl.meta || null; // légende + auteur, affichés côté site
       fs.copyFileSync(inFile, outFile); // HD tel quel
     } else {
       // caption / uniquify : l'input a été uploadé par le client dans le stockage
@@ -155,7 +178,7 @@ async function handleJob(jobId) {
 
     const outKey = `outputs/${jobId}.mp4`;
     await uploadFile(outFile, outKey);
-    await setJob(jobId, { status: "done", output_key: outKey });
+    await setJobMeta(jobId, { status: "done", output_key: outKey }, meta);
   } catch (e) {
     console.error("process error", e);
     try {
