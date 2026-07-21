@@ -27,7 +27,14 @@ const s3 = new S3Client({
   },
 });
 
-const mimeByExt = { ".mp4": "video/mp4", ".mov": "video/quicktime" };
+const mimeByExt = {
+  ".mp4": "video/mp4",
+  ".mov": "video/quicktime",
+  ".jpg": "image/jpeg",
+  ".jpeg": "image/jpeg",
+  ".png": "image/png",
+  ".webp": "image/webp",
+};
 
 // Envoie un fichier local vers le bucket et renvoie sa clé.
 async function uploadFile(localPath, key) {

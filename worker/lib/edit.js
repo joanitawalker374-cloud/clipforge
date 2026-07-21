@@ -224,7 +224,7 @@ function editVideo(input, output, opts = {}) {
     "-metadata", "encoder=clipforge",
   ];
 
-  const args = ["-y", "-threads", "1", "-i", input, "-vf", vf];
+  const args = ["-y", "-threads", "2", "-i", input, "-vf", vf];
   if (hasAudio(input)) {
     args.push("-af", `atempo=${speed.toFixed(5)}`, "-c:a", "aac", "-b:a", "160k");
   } else {
@@ -232,7 +232,8 @@ function editVideo(input, output, opts = {}) {
   }
   args.push(
     "-c:v", "libx264",
-    "-preset", "veryfast",
+    // superfast : nettement plus rapide que veryfast, qualité quasi identique à crf 20.
+    "-preset", "superfast",
     "-crf", "20",
     "-pix_fmt", "yuv420p",
     ...meta,

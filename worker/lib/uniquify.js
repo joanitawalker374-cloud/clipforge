@@ -48,7 +48,7 @@ function uniquify(input, output, opts = {}) {
   ];
 
   const trim = trimArgs(opts);
-  const args = ["-y", "-threads", "1", "-i", input, ...trim];
+  const args = ["-y", "-threads", "2", "-i", input, ...trim];
 
   if (level === "meta") {
     // Juste ré-écriture des métadonnées + remux. Si découpe, on ré-encode (copy + trim = risque de désync).
@@ -96,7 +96,7 @@ function uniquify(input, output, opts = {}) {
     "-vf", vf,
     "-af", `atempo=${atempo.toFixed(5)}`,
     "-c:v", "libx264",
-    "-preset", "veryfast",
+    "-preset", "superfast",
     "-crf", "23",
     "-c:a", "aac",
     "-b:a", "128k",

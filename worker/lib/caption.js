@@ -82,12 +82,12 @@ function burnCaption(input, output, opts = {}) {
 
   const args = [
     "-y",
-    "-threads", "1",
+    "-threads", "2",
     "-i", input,
     ...trim,
     "-vf", filter,
     "-c:v", "libx264",
-    "-preset", "veryfast",
+    "-preset", "superfast",
     "-crf", "23",
     ...audio,
     "-movflags", "+faststart",

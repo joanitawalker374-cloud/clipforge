@@ -30,9 +30,10 @@ function downloadTikTok(url, outDir) {
   const outTpl = path.join(outDir, id + ".%(ext)s");
 
   const args = [
-    "-f", "bv*+ba/b",
+    // vidéo HD si dispo, SINON meilleure image (posts photo Instagram).
+    "-f", "bv*+ba/b/best",
     "-S", "res,br", // meilleure résolution puis débit (HD garanti quand dispo)
-    "--merge-output-format", "mp4",
+    "--merge-output-format", "mp4", // (ignoré pour une image seule)
     "--no-playlist",
     "--no-warnings",
     "--restrict-filenames",
@@ -43,8 +44,10 @@ function downloadTikTok(url, outDir) {
 
   return run(args).then(() => {
     const files = fs.readdirSync(outDir);
-    const vid = files.find((n) => n.startsWith(id + ".") && !n.endsWith(".info.json"));
-    if (!vid) throw new Error("Fichier téléchargé introuvable");
+    const media = files.find((n) => n.startsWith(id + ".") && !n.endsWith(".info.json"));
+    if (!media) throw new Error("Fichier téléchargé introuvable");
+    const ext = path.extname(media).replace(".", "").toLowerCase() || "mp4";
+    const isImage = ["jpg", "jpeg", "png", "webp", "heic"].includes(ext);
 
     let meta = {};
     try {
@@ -61,7 +64,7 @@ function downloadTikTok(url, outDir) {
       }
     } catch {}
 
-    return { file: path.join(outDir, vid), title: id, meta };
+    return { file: path.join(outDir, media), title: id, ext, isImage, meta };
   });
 }
 

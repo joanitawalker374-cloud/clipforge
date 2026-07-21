@@ -119,8 +119,8 @@ async function subtitle(input, output, opts = {}, transcribeFn = transcribe) {
   if (trim.length) {
     workTmp = tmp("_work.mp4");
     await runFfmpeg([
-      "-y", "-threads", "1", "-i", input, ...trim,
-      "-c:v", "libx264", "-preset", "veryfast", "-crf", "23",
+      "-y", "-threads", "2", "-i", input, ...trim,
+      "-c:v", "libx264", "-preset", "superfast", "-crf", "23",
       "-c:a", "aac", "-b:a", "128k",
       "-movflags", "+faststart", workTmp,
     ]);
@@ -130,7 +130,7 @@ async function subtitle(input, output, opts = {}, transcribeFn = transcribe) {
   // 2) Extraction audio (16 kHz mono mp3, léger).
   const audio = tmp("_audio.mp3");
   await runFfmpeg([
-    "-y", "-threads", "1", "-i", work,
+    "-y", "-threads", "2", "-i", work,
     "-vn", "-ac", "1", "-ar", "16000", "-b:a", "64k", audio,
   ]);
 
@@ -152,9 +152,9 @@ async function subtitle(input, output, opts = {}, transcribeFn = transcribe) {
 
   try {
     await runFfmpeg([
-      "-y", "-threads", "1", "-i", work,
+      "-y", "-threads", "2", "-i", work,
       "-vf", filter,
-      "-c:v", "libx264", "-preset", "veryfast", "-crf", "23",
+      "-c:v", "libx264", "-preset", "superfast", "-crf", "23",
       "-c:a", "copy",
       "-movflags", "+faststart", output,
     ]);
