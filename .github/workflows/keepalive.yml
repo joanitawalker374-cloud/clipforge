@@ -1,16 +1,24 @@
-# Keep-alive : pinge le worker Render toutes les 10 minutes pour l'empêcher
-# de se mettre en veille (plan gratuit = veille après ~15 min d'inactivité).
-# Résultat : plus de démarrage à froid de ~50 s, le site répond H24.
+# Keep-alive DÉSACTIVÉ (plan gratuit Render).
+#
+# Pourquoi : sur le plan gratuit, Render limite le nombre d'heures de
+# fonctionnement par mois. Pinger le worker 24h/24 le maintient éveillé en
+# permanence et épuise tout le quota mensuel → le service finit SUSPENDU.
+#
+# Nouveau comportement : plus de ping automatique. Le worker se met en veille
+# après ~15 min d'inactivité et Render le RÉVEILLE AUTOMATIQUEMENT dès qu'un
+# visiteur utilise le site (léger délai de ~1 min au tout premier clic). Il ne
+# consomme donc des heures que lorsqu'il sert réellement → plus de suspension.
+#
+# Besoin ponctuel de le « réchauffer » à la main ? Onglet Actions → keepalive →
+# « Run workflow ». (Déclenchement manuel uniquement, aucun planning.)
 name: keepalive
 on:
-  schedule:
-    - cron: "*/10 * * * *"
   workflow_dispatch: {}
 
 jobs:
   ping:
     runs-on: ubuntu-latest
     steps:
-      - name: Ping du worker
+      - name: Ping du worker (manuel)
         run: |
           curl -fsS --max-time 40 "https://clipforge-6j6g.onrender.com/health" || true
