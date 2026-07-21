@@ -121,14 +121,20 @@ async function handleJob(jobId) {
     }
 
     outFile = tmp("_out.mp4");
+    let outExt = "mp4"; // extension de sortie (mp4 par défaut, jpg/png pour une photo IG)
     let meta = null;
 
     if (job.type === "tiktok" || job.type === "instagram") {
-      // yt-dlp gère TikTok comme Instagram (Reels/posts publics) via l'URL.
+      // yt-dlp gère TikTok comme Instagram (Reels ET posts photo publics) via l'URL.
       const dl = await downloadTikTok(params.url, os.tmpdir());
       inFile = dl.file;
       meta = dl.meta || null; // légende + auteur, affichés côté site
-      fs.copyFileSync(inFile, outFile); // HD tel quel
+      if (dl.isImage) {
+        // Post photo : on garde le fichier image tel quel (bon type/extension).
+        outExt = dl.ext || "jpg";
+        outFile = tmp("_out." + outExt);
+      }
+      fs.copyFileSync(inFile, outFile); // HD/qualité d'origine
     } else if (job.type === "edit") {
       // Édition « bot drive » : uniquisation + caption incrustée, HD 1080p.
       // Source = lien Instagram/TikTok (yt-dlp) OU fichier uploadé par le client.
@@ -195,7 +201,7 @@ async function handleJob(jobId) {
       }
     }
 
-    const outKey = `outputs/${jobId}.mp4`;
+    const outKey = `outputs/${jobId}.${outExt}`;
     await uploadFile(outFile, outKey);
     await setJobMeta(jobId, { status: "done", output_key: outKey }, meta);
   } catch (e) {
