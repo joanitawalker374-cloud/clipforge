@@ -97,10 +97,108 @@ function listProfile(url, max = 24) {
             (e.thumbnails && e.thumbnails.length
               ? e.thumbnails[e.thumbnails.length - 1].url
               : e.thumbnail) || "",
+          // Statistiques (TikTok expose souvent ces compteurs dans le listing).
+          views: toNum(e.view_count),
+          likes: toNum(e.like_count),
+          comments: toNum(e.comment_count),
+          isImage: false,
         }))
         .filter((v) => /^https?:\/\//i.test(v.url)),
     };
   });
 }
 
-module.exports = { downloadTikTok, listProfile };
+function toNum(v) {
+  const n = Number(v);
+  return Number.isFinite(n) && n >= 0 ? n : null;
+}
+
+/**
+ * Liste les publications RÉCENTES d'un compte Instagram (posts, reels, photos)
+ * via l'API web publique d'Instagram, AVEC les statistiques (vues + likes).
+ * Instagram limite l'accès anonyme : si l'IP est bloquée, on lève une erreur
+ * claire et le site affiche un message de repli.
+ */
+async function listInstagram(url, max = 24) {
+  const m = String(url).match(/instagram\.com\/(?:stories\/)?([A-Za-z0-9_.]+)\/?/i);
+  const username = m && m[1] ? m[1] : "";
+  const blocked = new Set(["p", "reel", "reels", "tv", "explore", "accounts", "stories"]);
+  if (!username || blocked.has(username.toLowerCase())) {
+    throw new Error("Lien de compte Instagram invalide (ex. https://www.instagram.com/nom_du_compte/)");
+  }
+
+  const api =
+    "https://www.instagram.com/api/v1/users/web_profile_info/?username=" +
+    encodeURIComponent(username);
+  const headers = {
+    "User-Agent":
+      "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
+    "X-IG-App-ID": "936619743392459",
+    "X-Requested-With": "XMLHttpRequest",
+    Accept: "*/*",
+    "Accept-Language": "en-US,en;q=0.9",
+    Referer: "https://www.instagram.com/" + username + "/",
+  };
+
+  let res;
+  try {
+    res = await fetch(api, { headers });
+  } catch (e) {
+    throw new Error("Instagram inaccessible: " + (e.message || e));
+  }
+  if (res.status === 404) throw new Error("Compte Instagram introuvable.");
+  if (!res.ok) {
+    throw new Error(
+      "Instagram a refusé la requête (HTTP " +
+        res.status +
+        "). L'accès à la liste d'un compte est restreint par Instagram."
+    );
+  }
+
+  const json = await res.json();
+  const user = json && json.data && json.data.user;
+  if (!user) throw new Error("Réponse Instagram inattendue (compte privé ?).");
+
+  const edges =
+    (user.edge_owner_to_timeline_media && user.edge_owner_to_timeline_media.edges) || [];
+  const videos = edges
+    .slice(0, max)
+    .map((edge) => {
+      const n = edge.node || {};
+      const shortcode = n.shortcode || n.code || "";
+      const isVideo = !!n.is_video || n.__typename === "GraphVideo";
+      const capEdges =
+        (n.edge_media_to_caption && n.edge_media_to_caption.edges) || [];
+      const caption =
+        capEdges.length && capEdges[0].node ? String(capEdges[0].node.text || "") : "";
+      const likes =
+        (n.edge_media_preview_like && n.edge_media_preview_like.count) ??
+        (n.edge_liked_by && n.edge_liked_by.count);
+      const comments = n.edge_media_to_comment && n.edge_media_to_comment.count;
+      return {
+        url: shortcode ? "https://www.instagram.com/p/" + shortcode + "/" : "",
+        id: shortcode,
+        title: caption.slice(0, 140),
+        thumbnail: n.thumbnail_src || n.display_url || "",
+        views: isVideo ? toNum(n.video_view_count) : null,
+        likes: toNum(likes),
+        comments: toNum(comments),
+        isImage: !isVideo,
+      };
+    })
+    .filter((v) => /^https?:\/\//i.test(v.url));
+
+  return {
+    author: user.full_name || user.username || username,
+    authorUrl: "https://www.instagram.com/" + (user.username || username) + "/",
+    videos,
+  };
+}
+
+/** Aiguillage : Instagram → API web ; sinon (TikTok…) → yt-dlp. */
+function listAny(url, max = 24) {
+  if (/instagram\.com/i.test(url)) return listInstagram(url, max);
+  return listProfile(url, max);
+}
+
+module.exports = { downloadTikTok, listProfile, listInstagram, listAny };
