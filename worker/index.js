@@ -15,6 +15,7 @@ const { downloadTikTok, listProfile } = require("./lib/tiktok");
 const { burnCaption } = require("./lib/caption");
 const { uniquify } = require("./lib/uniquify");
 const { subtitle } = require("./lib/subtitles");
+const { editVideo } = require("./lib/edit");
 const { uploadFile, signedGetUrl } = require("./lib/storage");
 
 const app = express();
@@ -29,7 +30,8 @@ const pool = new Pool({
 const WORKER_SECRET = process.env.WORKER_SECRET || "";
 // Au-delà de ce délai, un job encore "processing" est considéré comme bloqué
 // (worker redémarré / OOM) et repassé en erreur pour ne pas laisser l'UI tourner.
-const STALE_MS = 3 * 60 * 1000;
+// 15 min : l'édition HD pleine durée peut être longue sur une petite instance.
+const STALE_MS = 15 * 60 * 1000;
 
 function tmp(name) {
   return path.join(os.tmpdir(), Date.now() + "_" + Math.random().toString(36).slice(2) + name);
@@ -127,6 +129,23 @@ async function handleJob(jobId) {
       inFile = dl.file;
       meta = dl.meta || null; // légende + auteur, affichés côté site
       fs.copyFileSync(inFile, outFile); // HD tel quel
+    } else if (job.type === "edit") {
+      // Édition « bot drive » : uniquisation + caption incrustée, HD 1080p.
+      // Source = lien Instagram/TikTok (yt-dlp) OU fichier uploadé par le client.
+      if (params.url) {
+        const dl = await downloadTikTok(params.url, os.tmpdir());
+        inFile = dl.file;
+        meta = dl.meta || null;
+      } else {
+        inFile = tmp("_in.mp4");
+        await pullInput(job.input_key, inFile);
+      }
+      await editVideo(inFile, outFile, {
+        caption: stripUnsupported(params.caption),
+        format: params.format,
+        idx: 1,
+        seed: (crypto.randomBytes(4).readUInt32BE(0) % 1e9) | 0,
+      });
     } else {
       // caption / uniquify : l'input a été uploadé par le client dans le stockage
       inFile = tmp("_in.mp4");
