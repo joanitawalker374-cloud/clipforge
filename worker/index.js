@@ -11,7 +11,7 @@ const { Pool } = require("pg");
 const { Readable } = require("stream");
 const { pipeline } = require("stream/promises");
 
-const { downloadTikTok, listProfile } = require("./lib/tiktok");
+const { downloadTikTok, listProfile, listAny } = require("./lib/tiktok");
 const { burnCaption } = require("./lib/caption");
 const { uniquify } = require("./lib/uniquify");
 const { subtitle } = require("./lib/subtitles");
@@ -115,7 +115,7 @@ async function handleJob(jobId) {
     // profile : listing des vidéos d'un compte — résultat JSON, pas de vidéo.
     if (job.type === "profile") {
       const max = Math.min(parseInt(params.max, 10) || 24, 36);
-      const data = await listProfile(params.url, max);
+      const data = await listAny(params.url, max);
       await setJobMeta(jobId, { status: "done" }, data);
       return;
     }
