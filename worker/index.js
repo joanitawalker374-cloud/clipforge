@@ -229,6 +229,76 @@ setInterval(sweepStale, 60 * 1000);
 
 app.get("/health", (_req, res) => res.json({ ok: true, busy: processing, queued: queue.length }));
 
+// ---- Covoit229 : IA « Participation conseillée » ----
+// Endpoint public (léger, lecture seule) partagé avec l'app de covoiturage.
+// Utilise la clé Groq déjà configurée ici. CORS ouvert (appelé depuis la PWA).
+function cors(res) {
+  res.set("Access-Control-Allow-Origin", "*");
+  res.set("Access-Control-Allow-Headers", "content-type");
+  res.set("Access-Control-Allow-Methods", "POST, OPTIONS");
+}
+app.options("/suggest-contribution", (_req, res) => {
+  cors(res);
+  res.status(204).end();
+});
+app.post("/suggest-contribution", async (req, res) => {
+  cors(res);
+  try {
+    const key = process.env.GROQ_API_KEY;
+    if (!key) return res.status(500).json({ error: "config" });
+    const { from, to, seats } = req.body || {};
+    if (!from || !to) return res.status(400).json({ error: "from/to requis" });
+    const nSeats = Math.max(1, Math.min(8, parseInt(seats, 10) || 1));
+
+    const sys =
+      "Tu estimes une PARTICIPATION AUX FRAIS juste pour du covoiturage d'ENTRAIDE au Bénin " +
+      "(Cotonou et villes du pays). Monnaie : FCFA. Repères : essence ~650-750 FCFA/L (souvent " +
+      "informelle « kpayo »), consommation voiture ~8 L/100 km. La participation TOTALE ≈ coût du " +
+      "carburant de l'aller simple, à répartir entre les passagers. Ce n'est PAS un tarif de taxi " +
+      "commercial : reste modéré et solidaire. Arrondis au multiple de 100 FCFA. " +
+      'Réponds STRICTEMENT en JSON : {"distance_km": number, "total_fcfa": number, ' +
+      '"per_seat_fcfa": number, "rationale": "phrase courte en français"}.';
+    const user =
+      `Trajet : de « ${from} » à « ${to} ». Places passagers : ${nSeats}. ` +
+      "Donne la participation conseillée (par passager surtout).";
+
+    const r = await fetch("https://api.groq.com/openai/v1/chat/completions", {
+      method: "POST",
+      headers: { Authorization: `Bearer ${key}`, "Content-Type": "application/json" },
+      body: JSON.stringify({
+        model: "llama-3.3-70b-versatile",
+        temperature: 0.2,
+        response_format: { type: "json_object" },
+        messages: [
+          { role: "system", content: sys },
+          { role: "user", content: user },
+        ],
+      }),
+    });
+    if (!r.ok) return res.status(502).json({ error: "ia_indisponible" });
+    const data = await r.json();
+    let p = {};
+    try {
+      p = JSON.parse(data?.choices?.[0]?.message?.content ?? "{}");
+    } catch {
+      p = {};
+    }
+    const round100 = (n) => Math.max(0, Math.round((Number(n) || 0) / 100) * 100);
+    let perSeat = round100(p.per_seat_fcfa);
+    let total = round100(p.total_fcfa || perSeat * nSeats);
+    if (!perSeat && total) perSeat = round100(total / nSeats);
+    if (!total && perSeat) total = perSeat * nSeats;
+    res.json({
+      distanceKm: Number(p.distance_km) || null,
+      total,
+      perSeat,
+      rationale: String(p.rationale || "Estimation basée sur la distance et le carburant."),
+    });
+  } catch (e) {
+    res.status(400).json({ error: "bad_request" });
+  }
+});
+
 app.post("/process", async (req, res) => {
   if (WORKER_SECRET && req.headers["x-worker-secret"] !== WORKER_SECRET) {
     return res.status(401).json({ error: "unauthorized" });
