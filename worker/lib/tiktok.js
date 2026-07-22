@@ -87,15 +87,16 @@ function downloadTikTok(url, outDir) {
  * Énumère (au mieux) les vidéos d'un profil TikTok/Instagram. Fragile : ces plateformes
  * bloquent souvent ce type de listing. Retourne { author, authorUrl, videos:[{url,id,title,thumbnail}] }.
  */
-function listProfile(url, max = 24) {
+function listProfile(url, max = 24, cookiesFile = null) {
   if (!/^https?:\/\//i.test(url)) return Promise.reject(new Error("URL invalide"));
   const args = [
     "--flat-playlist",
     "--dump-single-json",
     "--no-warnings",
     "--playlist-end", String(max),
-    url,
   ];
+  if (cookiesFile) args.push("--cookies", cookiesFile);
+  args.push(url);
   return run(args).then((out) => {
     const data = JSON.parse(out);
     const entries = Array.isArray(data.entries) ? data.entries : [];
@@ -389,9 +390,27 @@ async function listInstagram(url, max = 24) {
   };
 }
 
-/** Aiguillage : Instagram → API web ; sinon (TikTok…) → yt-dlp. */
-function listAny(url, max = 24) {
-  if (/instagram\.com/i.test(url)) return listInstagram(url, max);
+/**
+ * Aiguillage du listing d'un compte :
+ *  - Instagram + session (cookie) : yt-dlp authentifié en priorité (il imite
+ *    l'app et passe souvent là où l'appel API direct est bridé en 429), puis
+ *    repli sur l'API web.
+ *  - Instagram sans session : API web directe.
+ *  - TikTok & autres : yt-dlp.
+ */
+async function listAny(url, max = 24) {
+  if (/instagram\.com/i.test(url)) {
+    const cf = igCookiesFile();
+    if (cf) {
+      try {
+        const viaYt = await listProfile(url, max, cf);
+        if (viaYt && viaYt.videos && viaYt.videos.length) return viaYt;
+      } catch (e) {
+        // yt-dlp a échoué (bridage/So) → on tente l'API web ci-dessous.
+      }
+    }
+    return listInstagram(url, max);
+  }
   return listProfile(url, max);
 }
 
