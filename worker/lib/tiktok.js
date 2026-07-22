@@ -48,12 +48,17 @@ function downloadTikTok(url, outDir) {
     if (cf) args.splice(args.length - 1, 0, "--cookies", cf);
   }
 
-  return run(args).catch((err) => {
-    // Les POSTS PHOTO Instagram ne sont pas gérés par yt-dlp (« No video
-    // formats found ») : on bascule sur la page embed d'Instagram, prévue
-    // pour l'affichage anonyme sur des sites tiers.
-    if (/instagram\.com/i.test(url) && /No video formats found/i.test(String(err && err.message))) {
-      return igEmbedPhoto(url, outDir).then((res) => ({ __photo: res }));
+  return run(args).catch(async (err) => {
+    if (/instagram\.com/i.test(url)) {
+      // 1) Apify d'abord (fiable, sans cookie) : reels ET photos.
+      if (APIFY_TOKEN) {
+        const viaApify = await apifyPostMedia(url, outDir).catch(() => null);
+        if (viaApify) return { __photo: viaApify };
+      }
+      // 2) Repli : posts photo via la page embed d'Instagram.
+      if (/No video formats found/i.test(String(err && err.message))) {
+        return igEmbedPhoto(url, outDir).then((res) => ({ __photo: res }));
+      }
     }
     throw err;
   }).then((maybe) => {
@@ -132,11 +137,102 @@ function toNum(v) {
 const BROWSER_UA =
   "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36";
 
-// ---- Session Instagram (optionnelle) --------------------------------------
+// ---- Apify (recommandé) : scraping Instagram fiable via proxys résidentiels --
+// Si APIFY_TOKEN est défini, Instagram (liste de compte + stats + reels/photos)
+// passe par l'actor Apify « instagram-scraper » : pas de cookie, rien n'expire,
+// pas de blocage 429 côté serveur.
+const APIFY_TOKEN = (process.env.APIFY_TOKEN || "").trim();
+
+async function apifyInstagram(input) {
+  if (!APIFY_TOKEN) return null;
+  const res = await fetch(
+    "https://api.apify.com/v2/acts/apify~instagram-scraper/run-sync-get-dataset-items?token=" +
+      encodeURIComponent(APIFY_TOKEN),
+    {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(input),
+    }
+  );
+  if (!res.ok) throw new Error("Apify a répondu HTTP " + res.status);
+  const items = await res.json();
+  return Array.isArray(items) ? items : [];
+}
+
+/** Liste les publications d'un compte Instagram via Apify (stats incluses). */
+async function listInstagramApify(url, max = 24) {
+  const items = await apifyInstagram({
+    directUrls: [url],
+    resultsType: "posts",
+    resultsLimit: max,
+    addParentData: false,
+  });
+  if (!items) return null;
+  const posts = items.filter((it) => it && !it.error && (it.shortCode || it.url));
+  if (!posts.length) return null;
+  const videos = posts
+    .slice(0, max)
+    .map((it) => {
+      const code = it.shortCode || "";
+      const isVideo = it.type === "Video" || !!it.videoUrl;
+      return {
+        url: it.url || (code ? "https://www.instagram.com/p/" + code + "/" : ""),
+        id: code,
+        title: String(it.caption || "").slice(0, 140),
+        thumbnail: it.displayUrl || "",
+        views: isVideo ? toNum(it.videoViewCount != null ? it.videoViewCount : it.videoPlayCount) : null,
+        likes: toNum(it.likesCount),
+        comments: toNum(it.commentsCount),
+        isImage: !isVideo,
+      };
+    })
+    .filter((v) => /^https?:\/\//i.test(v.url));
+  if (!videos.length) return null;
+  const owner = posts[0].ownerUsername || "";
+  return {
+    author: owner || url,
+    authorUrl: owner ? "https://www.instagram.com/" + owner + "/" : url,
+    videos,
+  };
+}
+
+/** Télécharge un reel OU une photo Instagram via Apify (renvoie le média + méta). */
+async function apifyPostMedia(url, outDir) {
+  const items = await apifyInstagram({
+    directUrls: [url],
+    resultsType: "posts",
+    resultsLimit: 1,
+    addParentData: false,
+  });
+  const it = items && items.find((x) => x && (x.videoUrl || x.displayUrl));
+  if (!it) return null;
+  const isVideo = !!it.videoUrl;
+  const media = it.videoUrl || it.displayUrl;
+  const r = await fetch(media, { headers: { "User-Agent": BROWSER_UA } });
+  if (!r.ok) return null;
+  const buf = Buffer.from(await r.arrayBuffer());
+  const ext = isVideo ? "mp4" : "jpg";
+  const file = path.join(outDir, "ig_" + Date.now() + "_" + Math.floor(Math.random() * 1e6) + "." + ext);
+  fs.writeFileSync(file, buf);
+  const author = it.ownerUsername || "";
+  return {
+    file,
+    title: "ig_" + (it.shortCode || ""),
+    ext,
+    isImage: !isVideo,
+    meta: {
+      caption: String(it.caption || "").slice(0, 2200),
+      author,
+      authorUrl: author ? "https://www.instagram.com/" + author + "/" : "",
+      sourceUrl: url,
+    },
+  };
+}
+
+// ---- Session Instagram (repli si pas d'Apify) -----------------------------
 // Si la variable d'environnement IG_SESSIONID est définie (cookie « sessionid »
 // d'un compte Instagram connecté — idéalement un compte SECONDAIRE), toutes les
-// requêtes Instagram (listing de compte, photos, yt-dlp) sont authentifiées :
-// le listing + les statistiques + les photos deviennent fiables.
+// requêtes Instagram (listing de compte, photos, yt-dlp) sont authentifiées.
 const IG_SESSIONID = (process.env.IG_SESSIONID || "").trim();
 
 function igCookieHeader() {
@@ -400,6 +496,15 @@ async function listInstagram(url, max = 24) {
  */
 async function listAny(url, max = 24) {
   if (/instagram\.com/i.test(url)) {
+    // 0) Apify en priorité : liste + stats fiables, sans cookie.
+    if (APIFY_TOKEN) {
+      try {
+        const viaApify = await listInstagramApify(url, max);
+        if (viaApify && viaApify.videos && viaApify.videos.length) return viaApify;
+      } catch (e) {
+        // Apify indisponible → on tente les méthodes suivantes.
+      }
+    }
     const cf = igCookiesFile();
     if (cf) {
       try {
