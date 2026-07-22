@@ -125,6 +125,67 @@ function toNum(v) {
 const BROWSER_UA =
   "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36";
 
+/** Convertit le code court d'un post Instagram en identifiant numérique. */
+function shortcodeToPk(sc) {
+  const alphabet = "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789-_";
+  let n = 0n;
+  for (const c of String(sc).slice(0, 11)) {
+    const i = alphabet.indexOf(c);
+    if (i < 0) break;
+    n = n * 64n + BigInt(i);
+  }
+  return n.toString();
+}
+
+/** Secours : récupère la photo d'un post via l'API média (media/<pk>/info). */
+async function igApiPhoto(sc, outDir) {
+  const pk = shortcodeToPk(sc);
+  const hosts = ["https://i.instagram.com", "https://www.instagram.com"];
+  for (const h of hosts) {
+    try {
+      const r = await fetch(h + "/api/v1/media/" + pk + "/info/", {
+        headers: {
+          "User-Agent": BROWSER_UA,
+          "X-IG-App-ID": "936619743392459",
+          Accept: "*/*",
+          "Accept-Language": "en-US,en;q=0.9",
+        },
+      });
+      if (!r.ok) continue;
+      const j = await r.json();
+      const it = j && j.items && j.items[0];
+      if (!it) continue;
+      const media = it.carousel_media && it.carousel_media.length ? it.carousel_media[0] : it;
+      const cand =
+        media.image_versions2 && media.image_versions2.candidates
+          ? media.image_versions2.candidates
+          : null;
+      if (!cand || !cand.length) continue;
+      const r2 = await fetch(cand[0].url, {
+        headers: { "User-Agent": BROWSER_UA, Referer: "https://www.instagram.com/" },
+      });
+      if (!r2.ok) continue;
+      const buf = Buffer.from(await r2.arrayBuffer());
+      const file = path.join(outDir, "ig_" + Date.now() + "_" + Math.floor(Math.random() * 1e6) + ".jpg");
+      fs.writeFileSync(file, buf);
+      const author = (it.user && (it.user.username || it.user.full_name)) || "";
+      return {
+        file,
+        title: "ig_" + sc,
+        ext: "jpg",
+        isImage: true,
+        meta: {
+          caption: (it.caption && it.caption.text ? String(it.caption.text) : "").slice(0, 2200),
+          author,
+          authorUrl: author ? "https://www.instagram.com/" + author + "/" : "",
+          sourceUrl: "https://www.instagram.com/p/" + sc + "/",
+        },
+      };
+    } catch {}
+  }
+  return null;
+}
+
 /**
  * Télécharge la PHOTO d'un post Instagram via la page embed (accès anonyme
  * prévu pour les sites tiers — bien moins bloquée que le site principal).
@@ -144,16 +205,23 @@ async function igEmbedPhoto(url, outDir) {
   if (!res.ok) throw new Error("Instagram a refusé l'accès au post (HTTP " + res.status + ")");
   const html = await res.text();
 
+  // Le HTML embed contient souvent le JSON ÉCHAPPÉ (\"display_url\":\"…\") :
+  // on déséchappe une copie avant de chercher, puis on tente la balise <img>.
+  const un = html.replace(/\\\//g, "/").replace(/\\u0026/g, "&").replace(/\\"/g, '"');
   let img = null;
-  let mm = html.match(/"display_url"\s*:\s*"((?:[^"\\]|\\.)+)"/);
-  if (mm) {
-    try { img = JSON.parse('"' + mm[1] + '"'); } catch {}
-  }
+  let mm = un.match(/"display_url"\s*:\s*"([^"]+)"/);
+  if (mm) img = mm[1];
   if (!img) {
-    mm = html.match(/class="EmbeddedMediaImage"[^>]*src="([^"]+)"/);
+    mm = html.match(/<img[^>]*EmbeddedMediaImage[^>]*?src="([^"]+)"/);
+    if (!mm) mm = html.match(/<img[^>]*?src="([^"]+)"[^>]*EmbeddedMediaImage/);
     if (mm) img = mm[1].replace(/&amp;/g, "&");
   }
-  if (!img) throw new Error("Photo introuvable (post privé, supprimé, ou vidéo uniquement).");
+  if (!img) {
+    // Dernier recours : l'API média d'Instagram (code du post → identifiant).
+    const viaApi = await igApiPhoto(sc, outDir).catch(() => null);
+    if (viaApi) return viaApi;
+    throw new Error("Photo introuvable (post privé, supprimé, ou accès bloqué par Instagram).");
+  }
 
   const r2 = await fetch(img, {
     headers: { "User-Agent": BROWSER_UA, Referer: "https://www.instagram.com/" },
