@@ -200,9 +200,14 @@ function editVideo(input, output, opts = {}) {
 
   const cf = buildCaptionFilter(opts.caption, workDir, opts.idx || 0, capW, capH);
 
-  // Chaîne de filtres : reformatage éventuel → unicité → caption → HD (≤1080p).
+  // On plafonne d'ABORD l'entrée à 1080p (hauteur max 1920) AVANT tous les autres
+  // filtres : une vidéo 4K est ramenée à 1080p dès le départ, donc l'unicité, la teinte,
+  // le bruit, la caption ET l'encodage tournent en 1080p au lieu du 4K → beaucoup moins
+  // de mémoire/CPU gaspillés, le serveur gratuit tient mieux la charge. La SORTIE reste
+  // en 1080p Full HD (pas d'agrandissement : min(ih,1920), donc rien n'est dégradé).
   const vf = [
     opts.format ? formatFilter(opts.format) : null,
+    `scale=-2:'min(ih,1920)'`,
     `scale=iw*${zoom.toFixed(4)}:ih*${zoom.toFixed(4)}`,
     `crop=iw/${zoom.toFixed(4)}:ih/${zoom.toFixed(4)}`,
     `eq=contrast=${contrast.toFixed(4)}:brightness=${bright.toFixed(4)}:saturation=${sat.toFixed(4)}`,
@@ -210,8 +215,6 @@ function editVideo(input, output, opts = {}) {
     noise > 0 ? `noise=alls=${noise}:allf=t` : null,
     `setpts=${(1 / speed).toFixed(5)}*PTS`,
     cf,
-    // HD sans upscaler : plafonne la hauteur à 1920 (≈1080p vertical), largeur paire auto.
-    `scale=-2:'min(ih,1920)'`,
   ]
     .filter(Boolean)
     .join(",");
@@ -226,14 +229,17 @@ function editVideo(input, output, opts = {}) {
 
   const args = ["-y", "-threads", "2", "-i", input, "-vf", vf];
   if (hasAudio(input)) {
-    args.push("-af", `atempo=${speed.toFixed(5)}`, "-c:a", "aac", "-b:a", "160k");
+    // Audio 128k : imperceptible pour du repost social, fichier plus léger.
+    args.push("-af", `atempo=${speed.toFixed(5)}`, "-c:a", "aac", "-b:a", "128k");
   } else {
     args.push("-an");
   }
   args.push(
     "-c:v", "libx264",
-    // superfast : nettement plus rapide que veryfast, qualité quasi identique à crf 20.
+    // superfast : rapide sur le petit serveur, tout en gardant une BONNE compression
+    // (fichier plus propre qu'ultrafast). L'allègement vient du 720p ci-dessus.
     "-preset", "superfast",
+    // crf 20 : bonne qualité HD (720p net, propre pour repost). Sortie HD, pas dégradée.
     "-crf", "20",
     "-pix_fmt", "yuv420p",
     ...meta,
