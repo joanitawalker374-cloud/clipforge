@@ -42,6 +42,12 @@ function downloadTikTok(url, outDir) {
     url,
   ];
 
+  // Session Instagram (si configurée) : yt-dlp télécharge en étant connecté.
+  if (/instagram\.com/i.test(url)) {
+    const cf = igCookiesFile();
+    if (cf) args.splice(args.length - 1, 0, "--cookies", cf);
+  }
+
   return run(args).catch((err) => {
     // Les POSTS PHOTO Instagram ne sont pas gérés par yt-dlp (« No video
     // formats found ») : on bascule sur la page embed d'Instagram, prévue
@@ -125,6 +131,34 @@ function toNum(v) {
 const BROWSER_UA =
   "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36";
 
+// ---- Session Instagram (optionnelle) --------------------------------------
+// Si la variable d'environnement IG_SESSIONID est définie (cookie « sessionid »
+// d'un compte Instagram connecté — idéalement un compte SECONDAIRE), toutes les
+// requêtes Instagram (listing de compte, photos, yt-dlp) sont authentifiées :
+// le listing + les statistiques + les photos deviennent fiables.
+const IG_SESSIONID = (process.env.IG_SESSIONID || "").trim();
+
+function igCookieHeader() {
+  return IG_SESSIONID ? "sessionid=" + IG_SESSIONID : null;
+}
+
+// Fichier cookies au format Netscape pour yt-dlp (créé une fois si besoin).
+let _igCookiesFile = null;
+function igCookiesFile() {
+  if (!IG_SESSIONID) return null;
+  if (_igCookiesFile && fs.existsSync(_igCookiesFile)) return _igCookiesFile;
+  const os = require("os");
+  const file = path.join(os.tmpdir(), "ig_cookies.txt");
+  const lines = [
+    "# Netscape HTTP Cookie File",
+    [".instagram.com", "TRUE", "/", "TRUE", "0", "sessionid", IG_SESSIONID].join("\t"),
+    "",
+  ].join("\n");
+  fs.writeFileSync(file, lines);
+  _igCookiesFile = file;
+  return file;
+}
+
 /** Convertit le code court d'un post Instagram en identifiant numérique. */
 function shortcodeToPk(sc) {
   const alphabet = "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789-_";
@@ -143,14 +177,14 @@ async function igApiPhoto(sc, outDir) {
   const hosts = ["https://i.instagram.com", "https://www.instagram.com"];
   for (const h of hosts) {
     try {
-      const r = await fetch(h + "/api/v1/media/" + pk + "/info/", {
-        headers: {
-          "User-Agent": BROWSER_UA,
-          "X-IG-App-ID": "936619743392459",
-          Accept: "*/*",
-          "Accept-Language": "en-US,en;q=0.9",
-        },
-      });
+      const hdrs = {
+        "User-Agent": BROWSER_UA,
+        "X-IG-App-ID": "936619743392459",
+        Accept: "*/*",
+        "Accept-Language": "en-US,en;q=0.9",
+      };
+      if (igCookieHeader()) hdrs.Cookie = igCookieHeader();
+      const r = await fetch(h + "/api/v1/media/" + pk + "/info/", { headers: hdrs });
       if (!r.ok) continue;
       const j = await r.json();
       const it = j && j.items && j.items[0];
@@ -195,12 +229,14 @@ async function igEmbedPhoto(url, outDir) {
   const m = String(url).match(/instagram\.com\/(?:[^/]+\/)?(?:p|reel|tv)\/([A-Za-z0-9_-]+)/i);
   if (!m) throw new Error("Lien de post Instagram invalide");
   const sc = m[1];
+  const embedHdrs = {
+    "User-Agent": BROWSER_UA,
+    "Accept-Language": "en-US,en;q=0.9",
+    Referer: "https://www.instagram.com/",
+  };
+  if (igCookieHeader()) embedHdrs.Cookie = igCookieHeader();
   const res = await fetch("https://www.instagram.com/p/" + sc + "/embed/captioned/", {
-    headers: {
-      "User-Agent": BROWSER_UA,
-      "Accept-Language": "en-US,en;q=0.9",
-      Referer: "https://www.instagram.com/",
-    },
+    headers: embedHdrs,
   });
   if (!res.ok) throw new Error("Instagram a refusé l'accès au post (HTTP " + res.status + ")");
   const html = await res.text();
@@ -282,6 +318,7 @@ async function listInstagram(url, max = 24) {
     "Accept-Language": "en-US,en;q=0.9",
     Referer: "https://www.instagram.com/" + username + "/",
   };
+  if (igCookieHeader()) headers.Cookie = igCookieHeader();
 
   // Deux hôtes d'API : www (site web) puis i.instagram.com (API mobile),
   // souvent plus permissif quand le premier bloque l'IP du serveur.
