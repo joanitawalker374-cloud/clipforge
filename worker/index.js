@@ -256,24 +256,25 @@ app.post("/suggest-contribution", async (req, res) => {
     if (!from || !to) return res.status(400).json({ error: "from/to requis" });
     const nSeats = Math.max(1, Math.min(8, parseInt(seats, 10) || 1));
 
+    // Prix RÉELS du Bénin (ajustables sans toucher au code, via variables Render).
+    // Essence super à la POMPE (station) — officiel depuis le 1er mai 2026 : 725 FCFA/L.
+    const FUEL = Number(process.env.FUEL_PRICE_FCFA) || 725; // FCFA / litre
+    const CONS = Number(process.env.FUEL_CONS_L_100) || 8; // L / 100 km (voiture mixte)
+
+    // L'IA ne sert QU'À estimer la DISTANCE routière (elle connaît le Bénin).
+    // Le montant est calculé ICI à partir du vrai prix station → réaliste et stable.
     const sys =
-      "Tu estimes une PARTICIPATION AUX FRAIS juste pour du covoiturage d'ENTRAIDE au Bénin " +
-      "(Cotonou et villes du pays). Monnaie : FCFA. Repères : essence ~650-750 FCFA/L (souvent " +
-      "informelle « kpayo »), consommation voiture ~8 L/100 km. La participation TOTALE ≈ coût du " +
-      "carburant de l'aller simple, à répartir entre les passagers. Ce n'est PAS un tarif de taxi " +
-      "commercial : reste modéré et solidaire. Arrondis au multiple de 100 FCFA. " +
-      'Réponds STRICTEMENT en JSON : {"distance_km": number, "total_fcfa": number, ' +
-      '"per_seat_fcfa": number, "rationale": "phrase courte en français"}.';
-    const user =
-      `Trajet : de « ${from} » à « ${to} ». Places passagers : ${nSeats}. ` +
-      "Donne la participation conseillée (par passager surtout).";
+      "Tu es un estimateur de DISTANCE routière au Bénin (Cotonou et villes du pays). " +
+      "Donne la distance routière réaliste en kilomètres entre deux lieux. " +
+      'Réponds STRICTEMENT en JSON : {"distance_km": number}.';
+    const user = `Distance routière de « ${from} » à « ${to} » au Bénin, en km.`;
 
     const r = await fetch("https://api.groq.com/openai/v1/chat/completions", {
       method: "POST",
       headers: { Authorization: `Bearer ${key}`, "Content-Type": "application/json" },
       body: JSON.stringify({
         model: "llama-3.3-70b-versatile",
-        temperature: 0.2,
+        temperature: 0.1,
         response_format: { type: "json_object" },
         messages: [
           { role: "system", content: sys },
@@ -289,16 +290,26 @@ app.post("/suggest-contribution", async (req, res) => {
     } catch {
       p = {};
     }
+
+    // Distance estimée (bornée pour éviter les valeurs aberrantes).
+    let distanceKm = Number(p.distance_km) || 0;
+    if (!(distanceKm > 0)) distanceKm = 5;
+    distanceKm = Math.min(distanceKm, 1200);
+
+    // Coût carburant de l'ALLER SIMPLE, réparti entre les PASSAGERS (mode conservé).
     const round100 = (n) => Math.max(0, Math.round((Number(n) || 0) / 100) * 100);
-    let perSeat = round100(p.per_seat_fcfa);
-    let total = round100(p.total_fcfa || perSeat * nSeats);
-    if (!perSeat && total) perSeat = round100(total / nSeats);
-    if (!total && perSeat) total = perSeat * nSeats;
+    const fuelCost = distanceKm * (CONS / 100) * FUEL;
+    const total = round100(fuelCost);
+    const perSeat = round100(fuelCost / nSeats);
+    const distTxt = Math.round(distanceKm);
+
     res.json({
-      distanceKm: Number(p.distance_km) || null,
+      distanceKm: distTxt,
       total,
       perSeat,
-      rationale: String(p.rationale || "Estimation basée sur la distance et le carburant."),
+      rationale:
+        `≈ ${distTxt} km · essence ${FUEL} FCFA/L à la pompe · ~${CONS} L/100 km · ` +
+        `carburant de l'aller partagé entre ${nSeats} passager${nSeats > 1 ? "s" : ""}.`,
     });
   } catch (e) {
     res.status(400).json({ error: "bad_request" });
