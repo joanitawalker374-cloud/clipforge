@@ -216,22 +216,40 @@ async function handleJob(jobId) {
   }
 }
 
-// Repasse en erreur les jobs restés "processing" trop longtemps (worker redémarré/OOM).
-async function sweepStale() {
+// AUTO-RÉCUPÉRATION : un job resté "processing" trop longtemps = le serveur gratuit
+// s'est mis en veille / a redémarré / a manqué de mémoire pendant ce job. Au lieu de le
+// mettre en ERREUR (ce que voyait l'utilisateur), on le REMET EN FILE d'attente pour
+// qu'il se termine tout seul. Beaucoup moins d'erreurs quand il y a du volume.
+async function reconcileStale() {
   try {
-    await pool.query(
-      `UPDATE jobs SET status='error',
-         error='Traitement interrompu (mémoire limitée). Relance le job.',
-         updated_at=now()
+    const { rows } = await pool.query(
+      `UPDATE jobs SET status='queued', updated_at=now()
        WHERE status='processing'
-         AND updated_at < now() - ($1::int * interval '1 millisecond')`,
+         AND updated_at < now() - ($1::int * interval '1 millisecond')
+       RETURNING id`,
       [STALE_MS]
     );
+    for (const r of rows) enqueue(r.id);
   } catch (e) {
-    console.error("sweep error", e.message);
+    console.error("reconcile error", e.message);
   }
 }
-setInterval(sweepStale, 60 * 1000);
+setInterval(reconcileStale, 60 * 1000);
+
+// Au démarrage, aucun job n'est réellement en cours : tous les "processing" en base
+// sont des orphelins d'un redémarrage → on les remet en file pour qu'ils reprennent.
+async function recoverOnStart() {
+  try {
+    const { rows } = await pool.query(
+      `UPDATE jobs SET status='queued', updated_at=now()
+       WHERE status='processing' RETURNING id`
+    );
+    for (const r of rows) enqueue(r.id);
+    if (rows.length) console.log("récupération démarrage : " + rows.length + " job(s) relancé(s)");
+  } catch (e) {
+    console.error("recover error", e.message);
+  }
+}
 
 app.get("/health", (_req, res) => res.json({ ok: true, busy: processing, queued: queue.length }));
 
@@ -330,6 +348,6 @@ app.post("/process", async (req, res) => {
 const port = process.env.PORT || 8080;
 app.listen(port, () => {
   console.log("worker en écoute sur :" + port);
-  // Nettoyage initial : les jobs "processing" d'avant le redémarrage sont orphelins.
-  sweepStale();
+  // Récupération initiale : relance les jobs "processing" orphelins d'avant le redémarrage.
+  recoverOnStart();
 });
