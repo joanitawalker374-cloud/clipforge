@@ -5,7 +5,7 @@
 //   2) sa CAPTION est incrustée façon "bash vidéo" : sous-titre ASS blanc
 //      gras CENTRÉ verticalement, avec une ombre floue noire (glow),
 // puis ré-encodée proprement. Différences voulues côté site (choix de NATHAN) :
-//   • vidéo ENTIÈRE (pas de coupe à 6 s),
+//   • vidéo coupée aux 6 premières secondes (léger → beaucoup de vidéos sans erreur),
 //   • sortie HD (jusqu'à 1080p, sans upscaler), crf 20 (meilleure qualité).
 const { spawn } = require("child_process");
 const fs = require("fs");
@@ -167,6 +167,12 @@ function buildCaptionFilter(caption, workDir, idx, w, h) {
  * @param {string} output
  * @param {object} opts { caption, seed, format }  format: '9:16'|'4:5'|'1:1'|undefined
  */
+// Durée maximale de la vidéo éditée (en secondes). On garde les 6 premières
+// secondes : le serveur ne lit/traite QUE ces 6 s (il ne décode même pas le reste
+// du fichier) → énormément plus rapide et léger, donc beaucoup plus de vidéos
+// enchaînées sans erreur, même sur le serveur gratuit. Ajustable ici si besoin.
+const CLIP_SECONDS = 6;
+
 function editVideo(input, output, opts = {}) {
   const seed = (opts.seed ?? Math.floor(Date.now() % 1e9)) | 0;
   const r = rng(seed);
@@ -227,7 +233,9 @@ function editVideo(input, output, opts = {}) {
     "-metadata", "encoder=clipforge",
   ];
 
-  const args = ["-y", "-threads", "2", "-i", input, "-vf", vf];
+  // `-t CLIP_SECONDS` AVANT `-i` : ffmpeg ne lit que les 6 premières secondes de
+  // la source (peu importe sa longueur) → traitement quasi instantané.
+  const args = ["-y", "-threads", "2", "-t", String(CLIP_SECONDS), "-i", input, "-vf", vf];
   if (hasAudio(input)) {
     // Audio 128k : imperceptible pour du repost social, fichier plus léger.
     args.push("-af", `atempo=${speed.toFixed(5)}`, "-c:a", "aac", "-b:a", "128k");
